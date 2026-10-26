@@ -236,7 +236,7 @@ async def cmd_start(m: Message):
 async def cmd_stop(m: Message):
     await remove_sub(m.chat.id)
     await m.answer("Уведомления отключены. Чтобы включить снова, отправьте /start.")
-    
+
 @dp.message(Command("next"))
 async def cmd_next(m: Message):
     now = datetime.now(TZ)
@@ -262,6 +262,7 @@ async def start_web():
     logging.info("Web server started on port %s", port)
 
 async def main():
+    logging.info("Upstash подключён: %s", bool(UPSTASH_URL))
     await start_web()
     plan_today()
     scheduler.add_job(plan_today, CronTrigger(hour=0, minute=5), id="daily_plan")
