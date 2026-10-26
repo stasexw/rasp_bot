@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import aiohttp
+from aiogram.exceptions import TelegramForbiddenError
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -111,6 +113,51 @@ def format_lesson(slot: int, text: str, start: datetime, end: datetime, first: b
     title = "🔔 Первая пара" if first else "➡️ Следующая пара"
     return f"{title} (№{slot}, {start:%H:%M}–{end:%H:%M})\n{text}"
 
+UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+SUBS_KEY = "subscribers"
+LOCAL_FILE = Path("subscribers.json")  # запасной вариант для запуска на своём компьютере
+
+
+async def _redis(*parts):
+    url = UPSTASH_URL.rstrip("/") + "/" + "/".join(str(p) for p in parts)
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"}) as r:
+            return (await r.json())["result"]
+
+
+async def get_subs() -> list[int]:
+    if UPSTASH_URL:
+        return [int(x) for x in await _redis("smembers", SUBS_KEY)]
+    if LOCAL_FILE.exists():
+        return json.loads(LOCAL_FILE.read_text())
+    return []
+
+
+async def add_sub(chat_id: int):
+    if UPSTASH_URL:
+        await _redis("sadd", SUBS_KEY, chat_id)
+    else:
+        subs = set(await get_subs()) | {chat_id}
+        LOCAL_FILE.write_text(json.dumps(list(subs)))
+
+
+async def remove_sub(chat_id: int):
+    if UPSTASH_URL:
+        await _redis("srem", SUBS_KEY, chat_id)
+    else:
+        subs = set(await get_subs()) - {chat_id}
+        LOCAL_FILE.write_text(json.dumps(list(subs)))
+
+async def send_one(message: str):
+    for chat_id in await get_subs():
+        try:
+            await bot.send_message(chat_id, message)
+        except TelegramForbiddenError:
+            await remove_sub(chat_id)  # человек заблокировал бота
+        except Exception as e:
+            logging.warning("Не удалось отправить в %s: %s", chat_id, e)
+
 
 # ---------- Бот и планировщик ----------
 bot = Bot(BOT_TOKEN)
@@ -172,7 +219,24 @@ async def cmd_start(m: Message):
         "дальше по одной после окончания каждой.\n/next показывает ближайшую пару."
     )
 
+@dp.message(Command("start"))
+async def cmd_start(m: Message):
+    await add_sub(m.chat.id)
+    name = m.from_user.first_name if m.from_user else "друг"
+    await m.answer(
+        f"Привет, {name}! Этот бот создал Я, мне лень постоянно смотреть в каком кабинете пара\n\n"
+        f"Готово! Сейчас идёт {week_name(datetime.now(TZ).date())} неделя.\n"
+        "Утром пришлю первую пару за 5 минут до начала, "
+        "дальше по одной после окончания каждой.\n"
+        "/next показывает ближайшую пару, /stop отключает уведомления."
+    )
 
+
+@dp.message(Command("stop"))
+async def cmd_stop(m: Message):
+    await remove_sub(m.chat.id)
+    await m.answer("Уведомления отключены. Чтобы включить снова, отправьте /start.")
+    
 @dp.message(Command("next"))
 async def cmd_next(m: Message):
     now = datetime.now(TZ)
