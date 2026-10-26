@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+from aiohttp import web
 
 load_dotenv()
 from aiogram import Bot, Dispatcher
@@ -118,6 +119,9 @@ scheduler = AsyncIOScheduler(timezone=TZ)
 
 
 def load_chat_id() -> int | None:
+    env = os.environ.get("CHAT_ID")
+    if env:
+        return int(env)
     if CHAT_FILE.exists():
         return json.loads(CHAT_FILE.read_text()).get("chat_id")
     return None
@@ -180,12 +184,29 @@ async def cmd_next(m: Message):
                 return
     await m.answer("Ближайших пар не найдено.")
 
+async def handle_ping(request):
+    return web.Response(text="ok")
+
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    logging.info("Web server started on port %s", port)
 
 async def main():
+    await start_web()
     plan_today()
     scheduler.add_job(plan_today, CronTrigger(hour=0, minute=5), id="daily_plan")
     scheduler.start()
     await dp.start_polling(bot)
+
+@dp.message(Command("id"))
+async def cmd_id(m: Message):
+    await m.answer(f"Ваш chat_id: {m.chat.id}")
 
 
 if __name__ == "__main__":
